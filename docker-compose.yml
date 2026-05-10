@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  db:
+    image: ankane/pgvector:latest
+    container_name: boardgame_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: cjw1645         # DB 아이디
+      POSTGRES_PASSWORD: 1q2w3e4r! # DB 비밀번호
+      POSTGRES_DB: boardgame_db     # 생성할 데이터베이스 이름
+    ports:
+      - "5432:5432"                 # 로컬 PC의 5432 포트와 연결
+    volumes:
+      - pgdata:/var/lib/postgresql/data # DB가 날아가지 않도록 데이터 영구 저장
+
+volumes:
+  pgdata:
