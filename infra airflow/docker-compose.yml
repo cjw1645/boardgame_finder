@@ -1,0 +1,47 @@
+version: '3.8'
+
+x-airflow-common:
+  &airflow-common
+  image: apache/airflow:2.9.0
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false' # 쓸데없는 예제 숨기기
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-} # requirements.txt 자동 설치용
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./requirements.txt:/requirements.txt
+  command: bash -c "pip install -r /requirements.txt && airflow webserver"
+  depends_on:
+    postgres-airflow:
+      condition: service_healthy
+
+services:
+  # Airflow 메타데이터용 DB (기존 boardgame_db와 포트 충돌 방지를 위해 포트 매핑 제거)
+  postgres-airflow:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+
+  # Airflow 스케줄러 (파이프라인을 시간에 맞춰 실행)
+  airflow-scheduler:
+    <<: *airflow-common
+    command: bash -c "pip install -r /requirements.txt && airflow db migrate && airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin && airflow scheduler"
+
+  # Airflow 웹 UI
+  airflow-webserver:
+    <<: *airflow-common
+    ports:
+      - 8080:8080
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
