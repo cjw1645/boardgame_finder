@@ -9,14 +9,24 @@ class BoardGameMapper:
     def __init__(self, df_master_bl):
         """보드라이프 마스터 DB 초기화 및 정규화"""
         self.df_master = df_master_bl.copy()
-        self.df_master['norm_name'] = self.df_master['한글이름'].apply(self._normalize_text)
+        
+        # [통합 파트] 결측치 방어 및 숫자형 데이터 캐스팅
+        self.df_master['game_name_kr'] = self.df_master['game_name_kr'].fillna('')
+        self.df_master['min_players'] = pd.to_numeric(self.df_master['min_players'], errors='coerce')
+        
+        # 정규화된 이름 컬럼 생성
+        self.df_master['norm_name'] = self.df_master['game_name_kr'].apply(self._normalize_text)
         self.master_choices = self.df_master['norm_name'].tolist()
 
     def _normalize_text(self, text):
         """특수문자 및 공백 제거 (소문자화)"""
-        if pd.isna(text): return ""
+        if pd.isna(text) or not str(text).strip(): 
+            return ""
+        # 괄호 안의 내용 제거 (예: 확장판 부제 등)
         clean_text = re.sub(r'\[.*?\]|\(.*?\)', '', str(text))
+        # 한글, 영문, 숫자만 남기고 특수기호 제거
         clean_text = re.sub(r'[^\w\s가-힣a-zA-Z0-9]', '', clean_text)
+        # 공백 제거 및 소문자 변환
         return re.sub(r'\s+', '', clean_text).lower()
 
     def _has_expansion_keyword(self, text):
@@ -52,16 +62,21 @@ class BoardGameMapper:
 
             for match_str, score, _ in best_matches:
                 candidate = self.df_master[self.df_master['norm_name'] == match_str].iloc[0]
-                master_is_exp = self._has_expansion_keyword(candidate['한글이름'])
+                # [수정 완료] '한글이름' -> 'game_name_kr'
+                master_is_exp = self._has_expansion_keyword(candidate['game_name_kr'])
 
                 # [검증 1] 확장판 페널티 (-30점)
                 if source_is_exp != master_is_exp:
                     score -= 30
                     
                 # [검증 2] 인원수 교차 검증 가산점 (+5점)
-                if score < 95 and pd.notna(source_min_p) and pd.notna(candidate['Min인원']):
-                    if float(source_min_p) == float(candidate['Min인원']):
-                        score += 5
+                # [수정 완료] 'Min인원' -> 'min_players'
+                if score < 95 and pd.notna(source_min_p) and pd.notna(candidate['min_players']):
+                    try:
+                        if float(source_min_p) == float(candidate['min_players']):
+                            score += 5
+                    except ValueError:
+                        pass # 숫자로 변환 불가능한 엣지 케이스 방어
 
                 if score > highest_score:
                     highest_score = score
@@ -72,7 +87,7 @@ class BoardGameMapper:
                 mapped_results.append({
                     "game_id": source_id, 
                     "BL_ID": final_match['BL_ID'], 
-                    "matched_title": final_match['한글이름'],
+                    "matched_title": final_match['game_name_kr'], # [수정 완료]
                     "match_type": "Auto_Matched", 
                     "score": highest_score
                 })
@@ -95,15 +110,15 @@ def run_integration_and_load():
     # ==========================================
     try:
         # 실제 환경에서는 보드라이프 DB를 SQL이나 CSV에서 불러옵니다.
-        df_bl_master = pd.read_csv("/tmp/master_boardlife.csv") 
+        df_bl_master = pd.read_csv("/opt/airflow/data/master_boardlife.csv") 
         
-        df_store_hero = pd.read_csv("/tmp/dim_store_hero.csv")
-        df_game_hero = pd.read_csv("/tmp/dim_game_hero.csv")
-        df_fact_hero = pd.read_csv("/tmp/fact_inventory_hero.csv")
+        df_store_hero = pd.read_csv("/opt/airflow/data/dim_store_hero.csv")
+        df_game_hero = pd.read_csv("/opt/airflow/data/dim_game_hero.csv")
+        df_fact_hero = pd.read_csv("/opt/airflow/data/fact_inventory_hero.csv")
         
-        df_store_red = pd.read_csv("/tmp/dim_store_redbutton.csv")
-        df_game_red = pd.read_csv("/tmp/dim_game_redbutton.csv")
-        df_fact_red = pd.read_csv("/tmp/fact_inventory_redbutton.csv")
+        df_store_red = pd.read_csv("/opt/airflow/data/dim_store_redbutton.csv")
+        df_game_red = pd.read_csv("/opt/airflow/data/dim_game_redbutton.csv")
+        df_fact_red = pd.read_csv("/opt/airflow/data/fact_inventory_redbutton.csv")
     except Exception as e:
         print(f"⚠️ 데이터 로드 실패. 선행 Task(추출)가 완료되었는지 확인하세요: {e}")
         return
@@ -166,17 +181,27 @@ def run_integration_and_load():
     # 6. PostgreSQL DB 최종 적재
     # ==========================================
     print("🔌 PostgreSQL 적재 시작...")
-    db_url = "postgresql://myuser:mypassword@localhost:5432/boardgame_db"
-    engine = create_engine(db_url)
     
-    # 1. 매장 테이블 적재
-    master_dim_store.to_sql("master_dim_store", engine, if_exists="replace", index=False)
-    # 2. ID 매핑 테이블 적재 (추후 트래킹용)
-    df_success[['game_id', 'BL_ID', 'match_type']].to_sql("game_id_map", engine, if_exists="replace", index=False)
-    # 3. 재고 팩트 테이블 적재
-    master_fact.to_sql("master_fact_inventory", engine, if_exists="replace", index=False)
+    # ⭐️ 보안 처리: 환경변수에서 DW 계정 정보 가져오기
+    dw_user = os.environ.get("DW_DB_USER", "myuser") # 기본값 fallback
+    dw_password = os.environ.get("DW_DB_PASSWORD", "mypassword")
     
-    print("✅ 데이터 대통합 및 적재 파이프라인 완벽 종료!")
+    # ⭐️ 도커 내부에서 윈도우 본체의 DB에 접속하기 위해 host.docker.internal 사용
+    db_url = f"postgresql://{dw_user}:{dw_password}@host.docker.internal:5432/boardgame_db"
+    
+    try:
+        engine = create_engine(db_url)
+        # 1. 매장 테이블 적재
+        master_dim_store.to_sql("master_dim_store", engine, if_exists="replace", index=False)
+        # 2. ID 매핑 테이블 적재
+        df_success[['game_id', 'BL_ID', 'match_type']].to_sql("game_id_map", engine, if_exists="replace", index=False)
+        # 3. 재고 팩트 테이블 적재
+        master_fact.to_sql("master_fact_inventory", engine, if_exists="replace", index=False)
+        
+        print("✅ 데이터 대통합 및 적재 파이프라인 완벽 종료!")
+    except Exception as e:
+        print(f"❌ DB 적재 중 에러 발생: {e}")
+        print("💡 힌트: 윈도우 본체(로컬)의 PostgreSQL(boardgame_db) 컨테이너가 켜져 있는지 확인하세요!")
 
 if __name__ == "__main__":
     run_integration_and_load()

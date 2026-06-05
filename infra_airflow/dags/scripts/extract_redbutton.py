@@ -86,7 +86,7 @@ def run_redbutton_extraction():
     df_fact = pipeline.build_fact_inventory(df_store)
     
     # 통합 로직에서 읽을 수 있도록 /tmp에 저장
-    df_store.to_csv("/tmp/dim_store_redbutton.csv", index=False, encoding="utf-8-sig")
-    df_game.to_csv("/tmp/dim_game_redbutton.csv", index=False, encoding="utf-8-sig")
-    df_fact.to_csv("/tmp/fact_inventory_redbutton.csv", index=False, encoding="utf-8-sig")
+    df_store.to_csv("/opt/airflow/data/dim_store_redbutton.csv", index=False, encoding="utf-8-sig")
+    df_game.to_csv("/opt/airflow/data/dim_game_redbutton.csv", index=False, encoding="utf-8-sig")
+    df_fact.to_csv("/opt/airflow/data/fact_inventory_redbutton.csv", index=False, encoding="utf-8-sig")
     print("✅ Red Button 데이터 추출 및 임시 저장 완료")

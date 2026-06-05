@@ -2,14 +2,19 @@ import requests
 import pandas as pd
 import time
 import re
+import os
+import urllib3
 from bs4 import BeautifulSoup
 from datetime import datetime
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class HeroDataCrawler:
     # (이전과 동일한 크롤러 로직. 지면상 유틸리티 및 크롤링 함수 세부 구현 생략)
     def __init__(self, kakao_api_key):
         self.base_url = "https://funhero.co.kr"
         self.session = requests.Session()
+        self.session.verify = False
         self.headers = {"User-Agent": "Mozilla/5.0"}
         self.kakao_api_key = kakao_api_key
 
@@ -39,6 +44,11 @@ class HeroDataCrawler:
             api_url = f"{self.base_url}/admin/bbs/mapAddrList.php"
             try:
                 res = self.session.get(api_url, params={"code": "map_store", "searchopt": "subcon", "searchkey": region}, headers=self.headers)
+                
+                # ⭐️ [디버깅 추가] 서버가 뭐라고 대답하는지 로그에 찍어보기
+                print(f"[{region}] 응답 코드: {res.status_code}")
+                print(f"응답 내용(앞 200자): {res.text[:200]}")
+                
                 for item in res.json():
                     if item['idx'] not in seen_idx:
                         seen_idx.add(item['idx'])
@@ -85,7 +95,10 @@ class HeroDataCrawler:
         return pd.DataFrame(all_games).drop_duplicates(subset=['game_id']).reset_index(drop=True)
 
     def extract_fact_inventory(self, df_dim_store, df_dim_game):
-        # 재고 추출 로직
+        if df_dim_store.empty or df_dim_game.empty:
+            print("⚠️ 매장 또는 게임 데이터가 비어있어 재고 조회를 건너뜁니다.")
+            return pd.DataFrame(columns=["store_id", "game_id", "collected_date"])
+
         store_map = {name: sid for name, sid in zip(df_dim_store['branch_name'], df_dim_store['store_id'])}
         fact_inventory, api_url = [], f"{self.base_url}/store/get_store_list.php"
         today_date = datetime.now().strftime("%Y-%m-%d")
@@ -105,7 +118,12 @@ class HeroDataCrawler:
             except: continue
         return pd.DataFrame(fact_inventory)
 
-def run_hero_extraction(kakao_api_key):
+def run_hero_extraction():
+    kakao_api_key = os.environ.get("KAKAO_API_KEY")
+    
+    if not kakao_api_key:
+        raise ValueError("❌ 환경 변수에 KAKAO_API_KEY가 설정되지 않았습니다!")
+    
     print("🚀 Hero 추출 시작")
     crawler = HeroDataCrawler(kakao_api_key)
     df_store = crawler.extract_dim_store()
@@ -113,7 +131,7 @@ def run_hero_extraction(kakao_api_key):
     df_fact = crawler.extract_fact_inventory(df_store, df_game)
     
     # Airflow 워커에서 접근 가능한 임시 경로에 저장
-    df_store.to_csv("/tmp/dim_store_hero.csv", index=False, encoding="utf-8-sig")
-    df_game.to_csv("/tmp/dim_game_hero.csv", index=False, encoding="utf-8-sig")
-    df_fact.to_csv("/tmp/fact_inventory_hero.csv", index=False, encoding="utf-8-sig")
+    df_store.to_csv("/opt/airflow/data/dim_store_hero.csv", index=False, encoding="utf-8-sig")
+    df_game.to_csv("/opt/airflow/data/dim_game_hero.csv", index=False, encoding="utf-8-sig")
+    df_fact.to_csv("/opt/airflow/data/fact_inventory_hero.csv", index=False, encoding="utf-8-sig")
     print("✅ Hero 추출 완료 및 CSV 임시 저장 성공")
