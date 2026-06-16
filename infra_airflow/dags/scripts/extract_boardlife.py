@@ -19,6 +19,14 @@ class BoardlifeCrawler:
         }
         self.save_dir = "/opt/airflow/data" if os.path.exists("/opt/airflow/data") else "../data"
         self.file_path = os.path.join(self.save_dir, "master_boardlife.csv")
+        
+        # ⭐️ 영문 표준 컬럼명 및 순서 강제 고정 (CSV 헤더 변경 시 이 순서와 이름을 꼭 맞춰주세요!)
+        self.columns = [
+            "BL_ID", "bgg_id", "game_name_kr", "game_name_en", 
+            "min_players", "max_players", "best_player", 
+            "min_time", "max_time", "weight", "rating", 
+            "categories", "themes", "mechanisms", "designers", "url"
+        ]
 
     def get_last_scraped_id(self):
         if os.path.exists(self.file_path):
@@ -32,7 +40,6 @@ class BoardlifeCrawler:
         return 0
 
     def parse_text_to_int(self, text, regex_pattern, group_idx=1):
-        """정규식을 활용한 숫자 안전 추출 함수"""
         if not text: return None
         match = re.search(regex_pattern, text)
         return int(match.group(group_idx)) if match else None
@@ -44,14 +51,12 @@ class BoardlifeCrawler:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # 1. 기본 정보 페이지 수집
                 res = self.session.get(main_url, headers=self.headers, timeout=15)
                 if res.status_code != 200:
                     return None
                 
                 soup = BeautifulSoup(res.text, 'html.parser')
                 
-                # 게임 이름 추출
                 title_elem = soup.select_one('#boardgame-title')
                 if not title_elem: return None
                 game_name_kr = title_elem.text.strip()
@@ -59,18 +64,15 @@ class BoardlifeCrawler:
                 title_en_elem = soup.select_one('h2.font-17.main-color')
                 game_name_en = title_en_elem.text.strip() if title_en_elem else None
                 
-                # BGG ID 추출
                 bgg_id = None
                 bgg_link = soup.select_one("a[href*='boardgamegeek.com/boardgame/']")
                 if bgg_link:
                     match = re.search(r'/boardgame/(\d+)', bgg_link['href'])
                     if match: bgg_id = match.group(1)
 
-                # Weight (난이도)
                 weight_elem = soup.select_one('#game-weight')
                 weight = float(weight_elem.text.strip()) if weight_elem else None
 
-                # 인원, 시간, 연령 파싱
                 min_players, max_players, best_player = None, None, None
                 min_time, max_time = None, None
                 
@@ -81,7 +83,6 @@ class BoardlifeCrawler:
                     dd_text = dd.text.strip()
                     
                     if dt_text == '인원':
-                        # 예: "2-4명(베스트:4인,추천:2인)"
                         p_match = re.search(r'(\d+)(?:-(\d+))?명', dd_text)
                         if p_match:
                             min_players = int(p_match.group(1))
@@ -94,7 +95,6 @@ class BoardlifeCrawler:
                             min_time = int(t_match.group(1))
                             max_time = int(t_match.group(2)) if t_match.group(2) else min_time
                 
-                # 평점 
                 rating_dt = soup.find('dt', string=re.compile('평점'))
                 rating = None
                 if rating_dt:
@@ -102,7 +102,6 @@ class BoardlifeCrawler:
                     try: rating = float(rating_val)
                     except: pass
 
-                # 2. 크레딧(상세 분류) 페이지 수집
                 res_credits = self.session.get(credits_url, headers=self.headers, timeout=15)
                 categories, themes, mechanisms, designers = [], [], [], []
                 
@@ -160,7 +159,6 @@ class BoardlifeCrawler:
         print(f"🚀 보드라이프 마스터 데이터 수집 타겟 (ID: {start_id} ~ {end_id})")
         results = []
         
-        # 페이지 요청이 2배로 늘어났으므로 동시 스레드를 5에서 10으로 올려 속도 보완
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_id = {executor.submit(self.fetch_single_game, bl_id): bl_id for bl_id in range(start_id, end_id + 1)}
             for future in concurrent.futures.as_completed(future_to_id):
@@ -171,7 +169,8 @@ class BoardlifeCrawler:
                 if len(results) > 0 and len(results) % 50 == 0:
                     print(f"🔄 현재 {len(results)}개 게임 데이터 수집 완료...")
                     
-        return pd.DataFrame(results)
+        # ⭐️ DataFrame 생성 시 컬럼 순서 강제 적용
+        return pd.DataFrame(results, columns=self.columns)
 
 def run_boardlife_extraction():
     crawler = BoardlifeCrawler()

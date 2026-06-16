@@ -7,35 +7,40 @@ from sqlalchemy import create_engine
 
 class BoardGameMapper:
     def __init__(self, df_master_bl):
-        """보드라이프 마스터 DB 초기화 및 정규화"""
+        """
+        보드라이프 마스터 DB 초기화 및 매핑 전처리
+        - 결측치 처리 및 데이터 타입 강제 변환 수행
+        """
         self.df_master = df_master_bl.copy()
         
-        # [통합 파트] 결측치 방어 및 숫자형 데이터 캐스팅
         self.df_master['game_name_kr'] = self.df_master['game_name_kr'].fillna('')
         self.df_master['min_players'] = pd.to_numeric(self.df_master['min_players'], errors='coerce')
         
-        # 정규화된 이름 컬럼 생성
         self.df_master['norm_name'] = self.df_master['game_name_kr'].apply(self._normalize_text)
         self.master_choices = self.df_master['norm_name'].tolist()
 
     def _normalize_text(self, text):
-        """특수문자 및 공백 제거 (소문자화)"""
+        """
+        텍스트 유사도 비교를 위한 문자열 정규화
+        - 괄호 내 부제 제거, 특수문자 제거, 소문자 변환
+        """
         if pd.isna(text) or not str(text).strip(): 
             return ""
-        # 괄호 안의 내용 제거 (예: 확장판 부제 등)
         clean_text = re.sub(r'\[.*?\]|\(.*?\)', '', str(text))
-        # 한글, 영문, 숫자만 남기고 특수기호 제거
         clean_text = re.sub(r'[^\w\s가-힣a-zA-Z0-9]', '', clean_text)
-        # 공백 제거 및 소문자 변환
         return re.sub(r'\s+', '', clean_text).lower()
 
     def _has_expansion_keyword(self, text):
-        """확장판 키워드 감지"""
+        """게임명 내 확장판/프로모 관련 키워드 포함 여부 확인"""
         keywords = ['확장', 'exp', 'expansion', 'ext', '프로모']
         return any(kw in str(text).lower() for kw in keywords)
 
     def map_games(self, df_source):
-        """매핑 및 교차 검증 알고리즘 (Dead Letter Queue 분류 포함)"""
+        """
+        Fuzzy String Matching을 활용한 게임 메타데이터 매핑 알고리즘
+        - Score 기반 매칭 판별 (임계치 85점)
+        - 본판/확장판 교차 검증 및 최소 인원수 비교 가산점 적용
+        """
         mapped_results = []
         df_source['norm_title'] = df_source['title_ko'].apply(self._normalize_text)
 
@@ -45,7 +50,7 @@ class BoardGameMapper:
             raw_source_name = str(row['title_ko'])
             source_min_p = row.get('min_players')
             
-            # 합본 처리 로직
+            # 소스 데이터의 확장판 여부 판별 (합본은 본판으로 취급)
             if "포함" in raw_source_name or "합본" in raw_source_name:
                 source_is_exp = False 
             else:
@@ -54,40 +59,42 @@ class BoardGameMapper:
             if not self.master_choices:
                 continue
                 
-            # Top 3 후보 추출
+            # Levenshtein distance 기반 상위 3개 후보군 추출
             best_matches = process.extract(source_name, self.master_choices, scorer=fuzz.token_sort_ratio, limit=3)
             
             final_match = None
             highest_score = 0
 
-            for match_str, score, _ in best_matches:
+            # ⭐️ 반환값의 길이에 상관없이 안전하게 언패킹하도록 수정
+            for match in best_matches:
+                match_str = match[0]  # 첫 번째 요소: 문자열
+                score = match[1]      # 두 번째 요소: 점수
+
                 candidate = self.df_master[self.df_master['norm_name'] == match_str].iloc[0]
-                # [수정 완료] '한글이름' -> 'game_name_kr'
                 master_is_exp = self._has_expansion_keyword(candidate['game_name_kr'])
 
-                # [검증 1] 확장판 페널티 (-30점)
+                # [검증 1] 소스와 마스터 간 본판/확장판 속성이 불일치할 경우 페널티 부여
                 if source_is_exp != master_is_exp:
                     score -= 30
                     
-                # [검증 2] 인원수 교차 검증 가산점 (+5점)
-                # [수정 완료] 'Min인원' -> 'min_players'
+                # [검증 2] 매칭 점수가 100점이 아닐 경우, 최소 인원수가 일치하면 가산점 부여
                 if score < 95 and pd.notna(source_min_p) and pd.notna(candidate['min_players']):
                     try:
                         if float(source_min_p) == float(candidate['min_players']):
                             score += 5
                     except ValueError:
-                        pass # 숫자로 변환 불가능한 엣지 케이스 방어
+                        pass 
 
                 if score > highest_score:
                     highest_score = score
                     final_match = candidate
 
-            # 결과 판별 (85점 기준)
+            # 최종 점수에 따른 Auto_Matched / Review_Needed(DLQ) 분류
             if highest_score >= 85:
                 mapped_results.append({
                     "game_id": source_id, 
                     "BL_ID": final_match['BL_ID'], 
-                    "matched_title": final_match['game_name_kr'], # [수정 완료]
+                    "matched_title": final_match['game_name_kr'],
                     "match_type": "Auto_Matched", 
                     "score": highest_score
                 })
@@ -105,11 +112,8 @@ class BoardGameMapper:
 def run_integration_and_load():
     print("🔄 데이터 대통합 및 DB 적재 파이프라인 시작...")
     
-    # ==========================================
-    # 1. 소스 데이터 로드 (에러 방지 처리)
-    # ==========================================
+    # 1. 소스 데이터 로드
     try:
-        # 실제 환경에서는 보드라이프 DB를 SQL이나 CSV에서 불러옵니다.
         df_bl_master = pd.read_csv("/opt/airflow/data/master_boardlife.csv") 
         
         df_store_hero = pd.read_csv("/opt/airflow/data/dim_store_hero.csv")
@@ -120,12 +124,10 @@ def run_integration_and_load():
         df_game_red = pd.read_csv("/opt/airflow/data/dim_game_redbutton.csv")
         df_fact_red = pd.read_csv("/opt/airflow/data/fact_inventory_redbutton.csv")
     except Exception as e:
-        print(f"⚠️ 데이터 로드 실패. 선행 Task(추출)가 완료되었는지 확인하세요: {e}")
+        print(f"⚠️ 데이터 로드 실패. 선행 Task가 정상적으로 완료되었는지 확인하세요: {e}")
         return
 
-    # ==========================================
-    # 2. 게임 엔티티 매핑 (Hero & RedButton)
-    # ==========================================
+    # 2. 매장별 보드게임 엔티티 매핑 수행
     mapper = BoardGameMapper(df_bl_master)
     
     print("🎯 히어로 보드게임 매핑 중...")
@@ -133,16 +135,11 @@ def run_integration_and_load():
     print("🎯 레드버튼 보드게임 매핑 중...")
     red_mapped = mapper.map_games(df_game_red)
     
-    # 매핑 결과 통합
     all_mapped = pd.concat([hero_mapped, red_mapped], ignore_index=True)
-    
-    # 원본 게임 메타데이터 조인 (리뷰용)
     all_source_games = pd.concat([df_game_hero, df_game_red], ignore_index=True)
     df_final_map = pd.merge(all_mapped, all_source_games[['game_id', 'title_ko', 'min_players']], on='game_id', how='left')
 
-    # ==========================================
-    # 3. 성공/실패(DLQ) 분리 및 처리
-    # ==========================================
+    # 3. 매핑 결과 분리 및 수동 검토용(DLQ) 데이터 저장
     df_success = df_final_map[df_final_map['match_type'] == 'Auto_Matched']
     df_failed = df_final_map[df_final_map['match_type'] == 'Review_Needed']
 
@@ -152,56 +149,38 @@ def run_integration_and_load():
 
     if not df_failed.empty:
         today_str = datetime.now().strftime("%Y%m%d")
-        fail_filepath = f"/tmp/unmapped_review_{today_str}.csv"
-        # 보기 편하게 컬럼 순서 정렬
+        fail_filepath = f"/opt/airflow/data/unmapped_review_{today_str}.csv"
         df_failed = df_failed[['game_id', 'title_ko', 'min_players', 'score', 'match_type']]
         df_failed.to_csv(fail_filepath, index=False, encoding="utf-8-sig")
         print(f"📁 수동 검토용 DLQ 파일 생성 완료: {fail_filepath}")
 
-    # ==========================================
-    # 4. 재고 팩트 테이블(Fact Inventory) ID 교체
-    # ==========================================
-    # 매핑에 성공한 BL_ID 딕셔너리 생성
+    # 4. 재고 팩트 테이블(Fact Inventory) 식별자 교체 및 고아 데이터 제거
     valid_map_dict = dict(zip(df_success['game_id'], df_success['BL_ID']))
     
     master_fact = pd.concat([df_fact_hero, df_fact_red], ignore_index=True)
-    # 원본 game_id를 보드라이프 BL_ID로 교체
     master_fact['BL_ID'] = master_fact['game_id'].map(valid_map_dict)
-    
-    # 매핑 실패해서 BL_ID가 NaN인 재고는 적재하지 않음 (고아 데이터 방지)
     master_fact = master_fact.dropna(subset=['BL_ID'])
     master_fact = master_fact[['store_id', 'BL_ID', 'collected_date']]
 
-    # ==========================================
-    # 5. 매장 정보 통합
-    # ==========================================
+    # 5. 매장 차원 테이블 통합
     master_dim_store = pd.concat([df_store_hero, df_store_red], ignore_index=True)
 
-    # ==========================================
     # 6. PostgreSQL DB 최종 적재
-    # ==========================================
     print("🔌 PostgreSQL 적재 시작...")
     
-    # ⭐️ 보안 처리: 환경변수에서 DW 계정 정보 가져오기
-    dw_user = os.environ.get("DW_DB_USER", "myuser") # 기본값 fallback
+    dw_user = os.environ.get("DW_DB_USER", "myuser")
     dw_password = os.environ.get("DW_DB_PASSWORD", "mypassword")
-    
-    # ⭐️ 도커 내부에서 윈도우 본체의 DB에 접속하기 위해 host.docker.internal 사용
     db_url = f"postgresql://{dw_user}:{dw_password}@host.docker.internal:5432/boardgame_db"
     
     try:
         engine = create_engine(db_url)
-        # 1. 매장 테이블 적재
         master_dim_store.to_sql("master_dim_store", engine, if_exists="replace", index=False)
-        # 2. ID 매핑 테이블 적재
         df_success[['game_id', 'BL_ID', 'match_type']].to_sql("game_id_map", engine, if_exists="replace", index=False)
-        # 3. 재고 팩트 테이블 적재
         master_fact.to_sql("master_fact_inventory", engine, if_exists="replace", index=False)
         
-        print("✅ 데이터 대통합 및 적재 파이프라인 완벽 종료!")
+        print("✅ 데이터 대통합 및 적재 파이프라인 완료")
     except Exception as e:
-        print(f"❌ DB 적재 중 에러 발생: {e}")
-        print("💡 힌트: 윈도우 본체(로컬)의 PostgreSQL(boardgame_db) 컨테이너가 켜져 있는지 확인하세요!")
+        print(f"❌ DB 적재 실패: {e}")
 
 if __name__ == "__main__":
     run_integration_and_load()

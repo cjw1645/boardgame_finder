@@ -1,17 +1,17 @@
 x-airflow-common:
   &airflow-common
-  image: apache/airflow:2.9.0
+  build: .
+  restart: unless-stopped
   env_file:
     - ../.env
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+    TZ: Asia/Seoul  # KST 타임존 강제 설정
   volumes:
     - ./dags:/opt/airflow/dags
     - ../data:/opt/airflow/data
-    - ./requirements.txt:/requirements.txt
   depends_on:
     postgres-airflow:
       condition: service_healthy
@@ -20,20 +20,20 @@ services:
   # 1. Airflow 메타데이터 DB
   postgres-airflow:
     image: postgres:13
+    restart: unless-stopped
     env_file:
       - ../.env
     healthcheck:
-      # 컨테이너 안에서 $$를 사용해 .env의 변수를 불러옴
-      test: ["CMD-SHELL", "pg_isready -U admin -d $$POSTGRES_DB"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-airflow} -d $${POSTGRES_DB:-airflow}"]
       interval: 5s
       retries: 5
 
-  # 2. 초기화 특공대 컨테이너
+  # 2. 1회성 초기화 특공대
   airflow-init:
     <<: *airflow-common
+    restart: "no" # 무한 재부팅 방지
     command: >
       bash -c "
-      pip install -r /requirements.txt &&
       airflow db migrate &&
       airflow users create 
       --username $$AIRFLOW_ADMIN_USER 
@@ -47,7 +47,7 @@ services:
   # 3. Airflow 스케줄러
   airflow-scheduler:
     <<: *airflow-common
-    command: bash -c "pip install -r /requirements.txt && airflow scheduler"
+    command: scheduler
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -56,8 +56,8 @@ services:
   airflow-webserver:
     <<: *airflow-common
     ports:
-      - 8080:8080
-    command: bash -c "pip install -r /requirements.txt && airflow webserver"
+      - "8080:8080"
+    command: webserver
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
       interval: 10s
