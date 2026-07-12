@@ -1,0 +1,12 @@
+services:
+  streamlit-web:
+    image: python:3.10-slim
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    env_file:
+      - "../.env"
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: bash -c "pip install -r requirements.txt && streamlit run app.py"

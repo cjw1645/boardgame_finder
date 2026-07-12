@@ -20,7 +20,6 @@ class BoardlifeCrawler:
         self.save_dir = "/opt/airflow/data" if os.path.exists("/opt/airflow/data") else "../data"
         self.file_path = os.path.join(self.save_dir, "master_boardlife.csv")
         
-        # ⭐️ 영문 표준 컬럼명 및 순서 강제 고정 (CSV 헤더 변경 시 이 순서와 이름을 꼭 맞춰주세요!)
         self.columns = [
             "BL_ID", "bgg_id", "game_name_kr", "game_name_en", 
             "min_players", "max_players", "best_player", 
@@ -31,10 +30,12 @@ class BoardlifeCrawler:
     def get_last_scraped_id(self):
         if os.path.exists(self.file_path):
             try:
-                df = pd.read_csv(self.file_path)
+                df = pd.read_csv(self.file_path, low_memory=False)
                 if not df.empty and 'BL_ID' in df.columns:
-                    max_id = df['BL_ID'].astype(str).str.replace('bl_', '').astype(int).max()
-                    return max_id
+                    ids = df['BL_ID'].dropna().astype(str).str.replace('bl_', '')
+                    valid_ids = ids[ids.str.isnumeric()].astype(int)
+                    if not valid_ids.empty:
+                        return valid_ids.max()
             except Exception as e:
                 print(f"⚠️ 기존 CSV 읽기 에러: {e}")
         return 0
@@ -143,7 +144,7 @@ class BoardlifeCrawler:
                     time.sleep(2)
                     continue
                 return None
-            except Exception as e:
+            except Exception:
                 return None
 
     def crawl_incremental_data(self):
@@ -169,7 +170,6 @@ class BoardlifeCrawler:
                 if len(results) > 0 and len(results) % 50 == 0:
                     print(f"🔄 현재 {len(results)}개 게임 데이터 수집 완료...")
                     
-        # ⭐️ DataFrame 생성 시 컬럼 순서 강제 적용
         return pd.DataFrame(results, columns=self.columns)
 
 def run_boardlife_extraction():
@@ -182,16 +182,22 @@ def run_boardlife_extraction():
     
     os.makedirs(crawler.save_dir, exist_ok=True)
     
-    file_exists = os.path.exists(crawler.file_path)
-    df_new.to_csv(
+    if os.path.exists(crawler.file_path):
+        df_existing = pd.read_csv(crawler.file_path, low_memory=False)
+        df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+        # 중복 발생 시 가장 최근에 수집된(마지막) 데이터를 남깁니다.
+        df_combined = df_combined.drop_duplicates(subset=['BL_ID'], keep='last')
+    else:
+        df_combined = df_new
+
+    df_combined.to_csv(
         crawler.file_path, 
-        mode='a', 
+        mode='w', 
         index=False, 
-        header=not file_exists,
         encoding='utf-8-sig'
     )
     
-    print(f"✅ 최신 데이터 {len(df_new)}건 업데이트 완료! (경로: {crawler.file_path})")
+    print(f"✅ 데이터 업데이트 및 중복 정제 완료! (총 {len(df_combined)}건, 경로: {crawler.file_path})")
 
 if __name__ == "__main__":
     run_boardlife_extraction()

@@ -10,8 +10,7 @@ class RedButtonPipeline:
         self.api_url = "https://redbutton.co.kr/wp-admin/admin-ajax.php"
         self.main_url = "https://redbutton.co.kr/"
         self.session = requests.Session()
-        
-        # ⭐️ 봇 차단 우회용 헤더
+
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "X-Requested-With": "XMLHttpRequest",
@@ -20,7 +19,6 @@ class RedButtonPipeline:
         }
         self.timeout = 30 
         
-        # 파이프라인 시작 전 무조건 쿠키부터 챙김
         self._init_session_cookie()
 
     def _init_session_cookie(self):

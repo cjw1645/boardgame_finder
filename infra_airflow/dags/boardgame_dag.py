@@ -4,14 +4,13 @@ from airflow.operators.python import PythonOperator
 import sys
 import os
 
-# scripts 폴더 경로 추가
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-# 파일명과 함수명을 정확히 매칭하여 Import
 from scripts.extract_hero import run_hero_extraction
 from scripts.extract_redbutton import run_redbutton_extraction
 from scripts.integrate_and_load import run_integration_and_load
 from scripts.extract_boardlife import run_boardlife_extraction
+from scripts.extract_bgg import run_bgg_extraction
 
 default_args = {
     'owner': 'cjw1645',
@@ -30,7 +29,7 @@ with DAG(
 
     task_extract_hero = PythonOperator(
         task_id='extract_hero_data',
-        python_callable=run_hero_extraction, # 괄호() 없이 이름만 적습니다.
+        python_callable=run_hero_extraction,
     )
 
     task_extract_redbutton = PythonOperator(
@@ -43,12 +42,16 @@ with DAG(
         python_callable=run_boardlife_extraction,
     )
 
+    task_extract_bgg = PythonOperator(
+        task_id='extract_bgg_data',
+        python_callable=run_bgg_extraction,
+    )
+
     task_integrate_load = PythonOperator(
         task_id='integrate_and_load_to_db',
         python_callable=run_integration_and_load,
     )
 
-
-
-    # 병렬 추출 후 통합 적재 실행
-    [task_extract_hero, task_extract_redbutton, task_extract_boardlife] >> task_integrate_load
+    task_extract_boardlife >> task_extract_bgg
+    
+    [task_extract_hero, task_extract_redbutton, task_extract_bgg] >> task_integrate_load

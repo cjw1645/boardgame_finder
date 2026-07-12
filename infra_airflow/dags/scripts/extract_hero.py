@@ -10,7 +10,6 @@ from datetime import datetime
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class HeroDataCrawler:
-    # (이전과 동일한 크롤러 로직. 지면상 유틸리티 및 크롤링 함수 세부 구현 생략)
     def __init__(self, kakao_api_key):
         self.base_url = "https://funhero.co.kr"
         self.session = requests.Session()
@@ -37,7 +36,6 @@ class HeroDataCrawler:
         return None, None
 
     def extract_dim_store(self):
-        # 매장 추출 로직
         regions = ['서울', '경기', '인천', '강원', '충남', '충북', '대전', '대구', '경남', '경북', '전북', '전남', '울산', '광주', '부산', '제주']
         seen_idx, stores = set(), []
         for region in regions:
@@ -64,7 +62,6 @@ class HeroDataCrawler:
         return pd.DataFrame(stores)
 
     def extract_dim_game(self):
-        # 게임 추출 로직
         api_url = f"{self.base_url}/store/segame.php"
         all_games, page = [], 1
         while True:
@@ -130,7 +127,6 @@ def run_hero_extraction():
     df_game = crawler.extract_dim_game()
     df_fact = crawler.extract_fact_inventory(df_store, df_game)
     
-    # Airflow 워커에서 접근 가능한 임시 경로에 저장
     df_store.to_csv("/opt/airflow/data/dim_store_hero.csv", index=False, encoding="utf-8-sig")
     df_game.to_csv("/opt/airflow/data/dim_game_hero.csv", index=False, encoding="utf-8-sig")
     df_fact.to_csv("/opt/airflow/data/fact_inventory_hero.csv", index=False, encoding="utf-8-sig")
