@@ -28,7 +28,7 @@ class RedButtonPipeline:
             self.session.get(self.main_url, headers={"User-Agent": self.headers["User-Agent"]}, timeout=self.timeout)
             print(" - 쿠키 획득 완료!")
         except Exception as e:
-            print(f"⚠️ 쿠키 획득 에러: {e}")
+            raise RuntimeError('Redbutton session initialization failed') from e
 
     def _parse_players(self, text):
         nums = re.findall(r'\d+', str(text))
@@ -40,6 +40,7 @@ class RedButtonPipeline:
         print("🌐 [Red Button] 매장 데이터 수집 중...")
         try:
             res = self.session.get(self.api_url, params={"action": "luke_stores_list_json"}, headers=self.headers, timeout=self.timeout)
+            res.raise_for_status()
             stores = []
             for s in res.json().get('stores', []):
                 stores.append({
@@ -54,21 +55,21 @@ class RedButtonPipeline:
                 })
             return pd.DataFrame(stores)
         except Exception as e:
-            print(f"⚠️ 매장 데이터 수집 에러: {e}")
-            return pd.DataFrame()
+            raise RuntimeError('Store collection failed; keep previous snapshot') from e
 
     def build_dim_game(self):
         print("🎲 [Red Button] 게임 마스터 수집 중...")
         payload = {"action": "get_game_list", "branch_id": "", "query": ""}
         try:
             res = self.session.post(self.api_url, data=payload, headers=self.headers, timeout=self.timeout)
+            res.raise_for_status()
             soup = BeautifulSoup(res.json().get('html', ''), 'html.parser')
             items = soup.select('.red-game-wrap')
             games = []
             for item in items:
                 rules = item.select('.content-rule')
                 min_p, max_p = self._parse_players(rules[1].text) if len(rules) > 1 else (None, None)
-                playtime = self._parse_players(rules[2].text)[0] if len(rules) > 2 else None
+                playtime = self._parse_players(rules[2].text)[1] if len(rules) > 2 else None
                 games.append({
                     "game_id": f"red_{item.select_one('.content-store')['data-game-id']}",
                     "title_ko": item.select_one('.game-title').text.strip(),
@@ -80,8 +81,7 @@ class RedButtonPipeline:
                 })
             return pd.DataFrame(games).drop_duplicates(subset=['game_id']).reset_index(drop=True)
         except Exception as e:
-            print(f"⚠️ 게임 마스터 수집 에러: {e}")
-            return pd.DataFrame()
+            raise RuntimeError('Game collection failed; keep previous snapshot') from e
 
     def build_fact_inventory(self, df_store):
         print("📦 [Red Button] 매장별 재고 수집 중...")
@@ -92,18 +92,24 @@ class RedButtonPipeline:
         for i, row in df_store.iterrows():
             payload = {"action": "get_game_list", "branch_id": row['branch_id'], "query": ""}
             try:
+                if pd.isna(row['branch_id']) or not str(row['branch_id']).strip():
+                    raise ValueError('Missing branch ID')
                 res = self.session.post(self.api_url, data=payload, headers=self.headers, timeout=self.timeout)
+                res.raise_for_status()
                 soup = BeautifulSoup(res.json().get('html', ''), 'html.parser')
                 items = soup.select('.red-game-wrap')
+                if not items:
+                    raise ValueError('Empty branch response requires operator review')
                 for item in items:
                     inventory.append({
                         "store_id": row['store_id'],
                         "game_id": f"red_{item.select_one('.content-store')['data-game-id']}",
                         "collected_date": datetime.now().strftime("%Y-%m-%d")
                     })
-                time.sleep(0.1)
-            except: 
-                continue
+                print(f"  inventory {i + 1}/{len(df_store)}", flush=True)
+                time.sleep(0.5)
+            except Exception as exc:
+                raise RuntimeError(f"Inventory failed for {row['store_id']}; keep previous snapshot") from exc
         return pd.DataFrame(inventory)
 
 def run_redbutton_extraction():
